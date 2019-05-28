@@ -21,7 +21,7 @@ const defaultPkgName = "vfs"
 
 const usage = `NAME
 
-	govfs - embed files and directories into a Go binary
+	govfs - generate a virtual file system by embedding files and directories
 
 SYNOPSIS
     
