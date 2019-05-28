@@ -251,7 +251,6 @@ func (v *vfs) writeHeader() error {
 }
 
 var tmplHeader = `// Code generated with govfs. DO NOT EDIT.
-// {{.ts}}
 
 // Package {{.pkgName}} provides an embedded virtual file system.
 package {{.pkgName}}
@@ -427,7 +426,6 @@ func (t *vfsTests) Generate() {
 	handleError(err, "could not write tests")
 
 	data := map[string]interface{}{
-		"ts":              time.Now().Format(time.RFC3339),
 		"pkgName":         t.pkgName,
 		"testFilePath":    t.testFile.path,
 		"testFileSize":    t.testFile.size,
@@ -439,7 +437,6 @@ func (t *vfsTests) Generate() {
 }
 
 var tmplTest = `// Code generated with govfs. DO NOT EDIT.
-// {{.ts}}
 
 package {{.pkgName}}
 
