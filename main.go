@@ -21,7 +21,7 @@ const defaultPkgName = "vfs"
 
 const usage = `NAME
 
-	govfs - generate a virtual file system by embedding files and directories
+	govfs - generate a virtual file system by embedding files
 
 SYNOPSIS
     
@@ -29,8 +29,8 @@ SYNOPSIS
 	
 DESCRIPTION
 
-	Embed files and directories into a Go binary 
-	by generating a mini virtual file system.
+	Embed files into a Go binary by generating a mini 
+	virtual file system.
 
 	PATTERN is a shell GLOB file name pattern. The syntax of
 	the pattern is the same as in filepath.Match.
@@ -219,7 +219,7 @@ func (v *vfs) walk(targetDir string, src string) {
 				errorExit("target already exists: %s", target)
 			} else {
 				fmt.Println(p, " -> ", target)
-				version, err := v.writeFile(target, p, info.Size())
+				version, err := v.writeFile(target, p, info.Size(), info.ModTime().Unix())
 				handleError(err, "could not write: %s", target)
 				v.processed[target] = &file{
 					path:    target,
@@ -259,6 +259,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path"
+	"time"
+	"os"
+	"net/http"
 )
 
 const maxSize = int64(math.MaxInt32) // ~1.99 GiB
@@ -270,36 +274,34 @@ type File struct {
 	offset int64
 }
 
-// Open opens a file. If the version is specified it must match 
-// the version of the file. Open returns an error if the 
-// specified file does not exist.
-func Open(path, version string) (*File, error) {
+// Open opens the named file for reading. The path must be an 
+// absolute slash separated path to the file.
+//
+// Open returns an error if the specified file does not exist.
+// If there is an error, it will be of type *os.PathError.
+func Open(path string) (*File, error) {
+	return open(path)
+}
+
+func open(path string) (*File, error) {
 	f, ok := store[path]
 	if !ok {
-		return nil, fmt.Errorf("file not found: %s", path)
-	}
-	if version != "" && f.version != version {
-		return nil, fmt.Errorf("version mismatch (requested: %s, actual: %s): %s", 
-			version, f.version, path)
+		return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
 	}
 	return &File{f: f, path: path}, nil
 }
 
-// Path returns the path of the file.
-func (f *File) Path() string {
+// Name returns the name of the file as presented to Open.
+func (f *File) Name() string {
 	return f.path
 }
 
 // Version returns the version of the file.
 // The version is computed based on the contents of the file
-// using the adler32 hash function.
+// using the adler32 hash function. Therefore files with
+// different pahts but with same content will have the same version.
 func (f *File) Version() string {
 	return f.f.version
-}
-
-// Size returns the number of bytes of the file contents.
-func (f *File) Size() int64 {
-	return int64(len(f.f.contents))
 }
 
 // Read reads up to len(b) bytes into b. It returns the 
@@ -351,9 +353,71 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 	return f.offset, nil
 }
 
+// Close is a noop and always returns nil. 
+// Files live in the memory of the program 
+// therefore there is no need to close them.
+func (f *File) Close() error {
+	// no need to close, noop
+	return nil
+}
+
+func (f *File) Readdir(count int) ([]os.FileInfo, error) {
+	return nil, fmt.Errorf("not a directory: %s", f.path)
+}
+
+func (f *File) Stat() (os.FileInfo, error) {
+	return &fileInfo{f: f}, nil
+}
+
+type fileInfo struct {
+	f *File
+}
+
+// Name returns the base name of the file.
+func (i *fileInfo) Name() string {
+	return path.Base(i.f.Name())
+}      
+
+// Size returns the length in bytes.
+func (i *fileInfo) Size() int64 {
+	return int64(len(i.f.f.contents))
+}
+
+// Mode returns file mode bits.
+func (i *fileInfo) Mode() os.FileMode {
+	return 0
+}
+
+// ModTime returns modification time.
+func (i *fileInfo) ModTime() time.Time {
+	return time.Unix(i.f.f.modTime, 0)
+}
+
+// IsDir always returns false.
+func (i *fileInfo) IsDir() bool {
+	return false 
+}
+
+// Sys always retuns nil interface.
+func (i *fileInfo) Sys() interface{} {
+	return nil
+}
+
+// NewFileSystem returns a new http.FileSystem object.
+func NewFileSystem() http.FileSystem {
+	return &fileSystem{}
+}
+
+type fileSystem struct {}
+
+func (fs *fileSystem) Open(path string) (http.File, error) {
+	return open(path)
+}
+
 type file struct {
 	contents []byte
 	version string
+	modTime int64
 }
 
 var store map[string]*file = map[string]*file{
@@ -367,7 +431,12 @@ func (v *vfs) writeFooter() error {
 	return err
 }
 
-func (v *vfs) writeFile(target, src string, size int64) (string, error) {
+func (v *vfs) writeFile(
+	target string,
+	src string,
+	size int64,
+	modTime int64,
+) (string, error) {
 	version := ""
 
 	if v.w == nil {
@@ -411,7 +480,7 @@ func (v *vfs) writeFile(target, src string, size int64) (string, error) {
 		}
 	}
 	version = fmt.Sprintf("%x", hash.Sum(nil))
-	_, err = fmt.Fprintf(v.w, "},\n\t\tversion: \"%s\",\n\t},\n", version)
+	_, err = fmt.Fprintf(v.w, "},\n\t\tversion: \"%s\",\n\t\tmodTime: %d,\n\t},\n", version, modTime)
 	return version, err
 }
 
@@ -445,22 +514,22 @@ import (
 	"io"
 )
 
-func TestPath(t *testing.T) {
+func TestName(t *testing.T) {
 	t.Parallel()
-	f, err := Open("{{.testFilePath}}", "{{.testFileVersion}}")
+	f, err := Open("{{.testFilePath}}")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	expectedPath := "{{.testFilePath}}"
-	if f.Path() != expectedPath {
-		t.Fatalf("expected path %v, but got %v", expectedPath, f.Path())
+	expectedName := "{{.testFilePath}}"
+	if f.Name() != expectedName {
+		t.Fatalf("expected name %v, but got %v", expectedName, f.Name())
 	}
 }
 
 func TestVersion(t *testing.T) {
 	t.Parallel()
-	f, err := Open("{{.testFilePath}}", "{{.testFileVersion}}")
+	f, err := Open("{{.testFilePath}}")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -471,22 +540,9 @@ func TestVersion(t *testing.T) {
 	}
 }
 
-func TestSize(t *testing.T) {
-	t.Parallel()
-	f, err := Open("{{.testFilePath}}", "{{.testFileVersion}}")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	expectedSize := int64({{.testFileSize}})
-	if f.Size() != expectedSize {
-		t.Fatalf("expected size %v, but got %v", expectedSize, f.Size())
-	}
-}
-
 func TestReader(t *testing.T) {
 	t.Parallel()
-	f, err := Open("{{.testFilePath}}", "{{.testFileVersion}}")
+	f, err := Open("{{.testFilePath}}")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -505,7 +561,7 @@ func TestReader(t *testing.T) {
 
 func TestSeeker(t *testing.T) {
 	t.Parallel()
-	f, err := Open("{{.testFilePath}}", "{{.testFileVersion}}")
+	f, err := Open("{{.testFilePath}}")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
